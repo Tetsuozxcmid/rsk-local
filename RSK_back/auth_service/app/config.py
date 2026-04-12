@@ -1,0 +1,78 @@
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    DB_HOST: str
+    DB_PORT: int
+    DB_USER: str
+    DB_PASS: str
+    DB_NAME: str
+
+    SECRET_KEY: str
+    ALGORITHM: str
+    RABBITMQ_URL: str
+
+    SMTP_USERNAME: str
+    SMTP_PASSWORD: str
+    SMTP_PORT: int
+    SMTP_SERVER: str
+    SENDER_EMAIL: str
+
+    URL_FOR_TOKEN: str
+
+    AUTH_SERVICE_URL: str
+    USER_PROFILE_URL: str = "http://rsk_profile_app:8003"
+
+    VK_APP_ID: int
+    VK_APP_SECRET: str
+    VK_REDIRECT_URI: str
+
+    YANDEX_CLIENT_ID: str
+    YANDEX_CLIENT_SECRET: str
+    YANDEX_REDIRECT_URI: str
+
+    YANDEX_FRONTEND_URL: str
+
+    FRONTEND_URL: str
+
+    COOKIE_DOMAIN: str = ".rosdk.ru"
+    COOKIE_SECURE: bool = True
+
+    @property
+    def DATABASE_URL(self):
+        return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+
+    @property
+    def RABBIT_URL(self):
+        return f"{self.RABBITMQ_URL}"
+
+    @property
+    def URL_TOKEN(self):
+        return f"{self.URL_FOR_TOKEN}"
+
+    @property
+    def CLIENT_ID_YANDEX(self):
+        return self.YANDEX_CLIENT_ID
+
+    @property
+    def CLIENT_SECRET_YANDEX(self):
+        return self.YANDEX_CLIENT_SECRET
+
+    @property
+    def REDIRECT_URI_YANDEX(self):
+        return self.YANDEX_REDIRECT_URI
+
+    @property
+    def FRONTEND_URL(self):
+        return self.YANDEX_FRONTEND_URL
+
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+
+settings = Settings()  # type: ignore
+
+
+def get_auth_data():
+    return {"secret_key": settings.SECRET_KEY, "algorithm": settings.ALGORITHM}

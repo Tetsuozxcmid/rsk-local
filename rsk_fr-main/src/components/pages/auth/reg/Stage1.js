@@ -1,0 +1,21 @@
+import { motion } from "framer-motion";
+import React from "react";
+import Button from "@/components/ui/Button";
+
+export default function RegStage1({
+    pageVariants,
+    custom = 1,
+    onSwitchToLogin, // Принимаем функцию переключения
+}) {
+    return (
+        <motion.div key="register-stage1" custom={custom} initial="initial" animate="in" exit="out" variants={pageVariants} className="auth_cntr col-span-4 absolute w-full h-full justify-center">
+            <div className="flex flex-col items-center gap-[0.5rem] w-full">
+                <h3>Регистрация завершена</h3>
+                <p className="text-(--color-gray-black) text-center">Вы можете закончить настройку своего аккаунта в настройках профиля. Не забудьте подтвердить почту в отправленном вам письме. Удачи в цифровизации!</p>
+            </div>
+
+            {/* Используем переданную функцию вместо перезагрузки */}
+            <Button onClick={onSwitchToLogin}>Войти в аккаунт</Button>
+        </motion.div>
+    );
+}

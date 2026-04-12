@@ -1,0 +1,33 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&display=swap");
+
+@import "tailwindcss";
+
+@import "./typoghaphy.css";
+@import "./spacing.css";
+@import "./colour.css";
+@import "./projects.css";
+
+* {
+    text-wrap: balance;
+    font-family: "Manrope", sans-serif;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    border: none;
+    outline: none;
+    box-sizing: border-box;
+}
+
+.hero-team-layout {
+    gap: 2.5rem;
+    grid-template-rows: max-content;
+}
+
+input {
+    border: none;
+    outline: none;
+    background: transparent;
+}

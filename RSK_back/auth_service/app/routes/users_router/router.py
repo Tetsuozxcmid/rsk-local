@@ -1,0 +1,468 @@
+import json
+import logging
+from services.password_generator import generate_random_password
+import aio_pika
+from fastapi import (
+    APIRouter,
+    HTTPException,
+    Response,
+    status,
+    Depends,
+    BackgroundTasks,
+)
+from sqlalchemy import select
+from schemas.user_schemas.user_register import UserRegister
+from schemas.user_schemas.user_password import (
+    ChangePasswordSchema,
+    PasswordResetRequest,
+)
+from schemas.user_schemas.user_auth import UserAuth
+from sqlalchemy.ext.asyncio import AsyncSession
+from db.models.user import User
+from db.session import get_db
+from cruds.users_crud.crud import UserCRUD
+from services.jwt import create_access_token
+from services.emailsender import send_confirmation_email, send_new_password_email
+from services.oauth_profile import build_full_name, clean_text
+import asyncio
+from fastapi.responses import HTMLResponse
+from pathlib import Path
+from services.rabbitmq import get_rabbitmq_connection
+from services.auth_client import get_moderator, get_admin  
+from aio_pika.abc import AbstractRobustConnection
+from services.yandex_oauth import yandex_router
+from services.vk_oauth import vk_router
+from cookie_params import (
+    session_delete_cookie_kwargs,
+    session_set_cookie_kwargs,
+    userdata_delete_cookie_kwargs,
+)
+import time
+
+
+router = APIRouter(prefix="/users_interaction")
+logger = logging.getLogger(__name__)
+
+auth_router = APIRouter(tags=["Authentication"])
+email_router = APIRouter(tags=["Email Management"])
+user_management_router = APIRouter(tags=["User Management"])
+
+
+def _get_metric_active_users():
+    try:
+        from main import ACTIVE_USERS
+        return ACTIVE_USERS
+    except ImportError as e:
+        print(f"Warning: Could not import ACTIVE_USERS: {e}")
+        return None
+
+
+def _get_service_name():
+    try:
+        from main import SERVICE_NAME
+        return SERVICE_NAME
+    except ImportError:
+        return "auth_service"
+
+
+def update_active_users_metric(active_count: int):
+    metric = _get_metric_active_users()
+    service_name = _get_service_name()
+
+    if metric and service_name:
+        try:
+            metric.labels(service=service_name).set(active_count)
+            print(
+                f"✓ Metric updated: active_users_total{{{service_name}}} = {active_count}"
+            )
+        except Exception as e:
+            print(f"✗ Error updating metric: {e}")
+    else:
+        print(f"⚠ Could not update metric: metric={metric}, service={service_name}")
+
+
+def _resolve_registration_payload_names(user_data: UserRegister) -> tuple[str, str, str]:
+    first_name = clean_text(getattr(user_data, "first_name", None))
+    last_name = clean_text(getattr(user_data, "last_name", None))
+    raw_name = clean_text(getattr(user_data, "name", None))
+
+    if first_name or last_name:
+        return first_name, last_name, build_full_name(first_name, last_name)
+
+    if not raw_name:
+        return "", "", ""
+
+    raw_parts = [part for part in raw_name.split() if part]
+    if len(raw_parts) >= 2:
+        return raw_parts[0], " ".join(raw_parts[1:]).strip(), raw_name
+
+    return raw_name, "", raw_name
+
+
+@auth_router.post("/register/")
+async def register_user(
+    user_data: UserRegister,
+    db: AsyncSession = Depends(get_db),
+    rabbitmq: AbstractRobustConnection = Depends(get_rabbitmq_connection),
+    background_tasks: BackgroundTasks = None,
+):
+    try:
+        first_name, last_name, full_name = _resolve_registration_payload_names(user_data)
+        user, confirmation_token, temp_login = await UserCRUD.create_user(db, user_data)
+
+        if background_tasks:
+            background_tasks.add_task(
+                send_confirmation_email, user.email, confirmation_token, temp_login
+            )
+        else:
+            asyncio.create_task(
+                send_confirmation_email(user.email, confirmation_token, temp_login)
+            )
+
+        try:
+            channel = await rabbitmq.channel()
+            exchange = await channel.declare_exchange(
+                "user_events", type="direct", durable=True
+            )
+
+            user_data_message = {
+                "user_id": user.id,
+                "email": user.email,
+                "username": temp_login,
+                "name": full_name or user.temp_name,
+                "full_name": full_name or user.temp_name,
+                "first_name": first_name,
+                "last_name": last_name,
+                "verified": False,
+                "event_type": "user_registered",
+                "role": user.role.value,
+            }
+
+            message = aio_pika.Message(
+                body=json.dumps(user_data_message).encode(),
+                headers={"event_type": "user_events"},
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+            )
+            await exchange.publish(message, routing_key="user.created")
+
+        except Exception as e:
+            print(f"Failed to send RabbitMQ message: {e}")
+
+        return {
+            "message": "User registered successfully. Please check your email for verification.",
+            "user_id": user.id,
+            "email": user.email,
+            "future_login": temp_login,
+            "role": user.role,
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+
+
+@auth_router.post("/login/")
+async def auth_user(
+    response: Response, user_data: UserAuth, db: AsyncSession = Depends(get_db)
+):
+    password_str = user_data.password.get_secret_value()
+    user = await User.check_user(login=user_data.login, password=password_str, db=db)
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect login/email or password",
+        )
+
+    
+    result = await db.execute(select(User).where(User.id == user["id"]))
+    db_user = result.scalar_one_or_none()
+    
+    if db_user:
+        
+        current_role = db_user.role.value if hasattr(db_user.role, 'value') else str(db_user.role)
+    else:
+        
+        current_role = user["role"]
+    
+    
+    access_token = await create_access_token(
+        {"sub": str(user["id"]), "role": current_role}
+    )
+    
+    response.set_cookie(
+        key="users_access_token",
+        value=access_token,
+        **session_set_cookie_kwargs(),
+    )
+
+    return {
+        "message": "Access succeeded",
+        "role": current_role  
+    }
+
+
+@auth_router.post(
+    "/logout/",
+    status_code=status.HTTP_200_OK,
+    response_model=dict,
+    summary="Logout user",
+    description="Удаляет auth cookies и завершает сессию",
+)
+async def logout_user(response: Response):
+    response.delete_cookie(
+        key="users_access_token",
+        **session_delete_cookie_kwargs(),
+    )
+
+    response.delete_cookie(
+        key="userData",
+        **userdata_delete_cookie_kwargs(),
+    )
+
+    return {"message": "Successfully logged out"}
+
+
+@email_router.get("/confirm-email")
+async def confirm_email(
+    token: str,
+    db: AsyncSession = Depends(get_db),
+    rabbitmq: AbstractRobustConnection = Depends(get_rabbitmq_connection),
+):
+    user = await UserCRUD.confirm_user_email(db, token)
+
+    try:
+        channel = await rabbitmq.channel()
+        exchange = await channel.declare_exchange(
+            "user_events", type="direct", durable=True
+        )
+
+        user_data_message = {
+            "user_id": user.id,
+            "email": user.email,
+            "username": user.login,
+            "name": user.name,
+            "is_verified": True,
+            "event_type": "user_verified",
+            "role": user.role.value,
+        }
+
+        message = aio_pika.Message(
+            body=json.dumps(user_data_message).encode(),
+            headers={"event_type": "user_verified"},
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+        )
+        await exchange.publish(message, routing_key="user.verified")
+    except Exception as e:
+        print(f"Failed to send RabbitMQ message: {e}")
+
+    current_dir = Path(__file__).parent
+    html_file_path = current_dir / "mailsend.html"
+    if html_file_path.exists():
+        html_content = html_file_path.read_text(encoding="utf-8")
+        html_content = html_content.replace("{User_NAME}", user.name)
+        return HTMLResponse(content=html_content, status_code=200)
+    else:
+        return HTMLResponse(content="<h1>confirmed</h1>", status_code=200)
+
+
+@email_router.post("/resend-confirmation/")
+async def resend_confirmation(
+    email: str,
+    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
+):
+    users = await UserCRUD.get_users_by_email(db, email)
+    if not users:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    unverified_users = [user for user in users if not user.verified]
+    if not unverified_users:
+        raise HTTPException(status_code=400, detail="Email already verified")
+
+    user = UserCRUD.select_primary_user(unverified_users)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    duplicate_users = [duplicate for duplicate in unverified_users if duplicate.id != user.id]
+    for duplicate_user in duplicate_users:
+        await db.delete(duplicate_user)
+
+    import uuid
+
+    new_token = str(uuid.uuid4())
+    user.confirmation_token = new_token
+    await db.commit()
+
+    login_for_email = user.temp_login or user.login or f"user{user.id}"
+
+    if background_tasks:
+        background_tasks.add_task(
+            send_confirmation_email, user.email, new_token, login_for_email
+        )
+    else:
+        await send_confirmation_email(user.email, new_token, login_for_email)
+
+    return {"message": "Confirmation email sent successfully"}
+
+
+@user_management_router.get("/get_users/", description="Для админа будет токен")
+async def get_all_users(
+    db: AsyncSession = Depends(get_db), 
+    _=Depends(get_admin)  
+):
+    try:
+        users = await UserCRUD.get_all_users(db)
+
+        print(f"\n{'=' * 60}")
+        print(f"DEBUG get_all_users:")
+        print(f"  Всего пользователей: {len(users)}")
+
+        if users:
+            print(f"  Первый пользователь: {users[0]}")
+            print(f"  Поле 'verified': {users[0].get('verified')}")
+
+        active_count = 0
+        for user in users:
+            if user.get("verified", False):
+                active_count += 1
+
+        print(f"  Активных пользователей: {active_count}")
+        print(f"{'=' * 60}\n")
+
+        update_active_users_metric(active_count)
+
+        return users
+    except Exception as e:
+        print(f"ERROR in get_all_users: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch users: {str(e)}")
+
+
+@user_management_router.delete("/delete_user/")
+async def delete_user(
+    user_id: int, 
+    db: AsyncSession = Depends(get_db), 
+    _=Depends(get_admin)
+):
+    success = await UserCRUD.delete_user(db, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"message": "User deleted successfully"}
+
+
+@email_router.post("/reset-password/")
+async def reset_password(
+    reset_data: PasswordResetRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        new_password = generate_random_password(12)
+        user = await UserCRUD.get_user_for_password_reset(
+            db=db, email_or_login=reset_data.email_or_login
+        )
+        old_hashed_password = user.hashed_password
+
+        user = await UserCRUD.update_password(
+            db=db,
+            user=user,
+            new_password=new_password,
+        )
+
+        try:
+            await send_new_password_email(
+                recipient_email=user.email,
+                new_password=new_password,
+                login=user.login,
+            )
+        except Exception as email_error:
+            try:
+                await UserCRUD.update_password_hash(
+                    db=db,
+                    user=user,
+                    password_hash=old_hashed_password,
+                )
+            except HTTPException as rollback_error:
+                logger.error(
+                    "Failed to rollback password reset for %s after email delivery error: %s",
+                    user.email,
+                    rollback_error.detail,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Password was reset, but the email could not be delivered. "
+                        "Please contact support."
+                    ),
+                ) from email_error
+
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to send reset password email. Please try again later.",
+            ) from email_error
+
+        return {
+            "message": "New password has been sent to your email",
+            "email": user.email,
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Password reset failed: {str(e)}")
+
+
+@user_management_router.get("/get_user_by_id/{user_id}")
+async def get_user_by_id(
+    user_id: int, 
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        user = await UserCRUD.get_user_by_id(db=db, user_id=user_id)
+        return user
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"user with id {user_id} not found")
+
+
+# ========================================
+@router.get("/test-metric")
+async def test_metric():
+    try:
+        update_active_users_metric(777)
+
+        metric = _get_metric_active_users()
+        service_name = _get_service_name()
+
+        return {
+            "message": "Test metric endpoint",
+            "metric": "active_users_total",
+            "service": service_name,
+            "test_value": 777,
+            "metric_object": str(metric) if metric else "Not found",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "auth",
+        "timestamp": time.time(),
+        "endpoints": {
+            "metrics": "/auth/metrics",
+            "test_metric": "/auth/users_interaction/test-metric",
+            "get_users": "/auth/users_interaction/get_users",
+        },
+    }
+
+
+# ========================================================================
+
+
+router.include_router(auth_router)
+router.include_router(email_router)
+router.include_router(user_management_router)
+router.include_router(yandex_router)
+router.include_router(vk_router)

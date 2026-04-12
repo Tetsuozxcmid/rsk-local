@@ -1,0 +1,14 @@
+services:
+  admin_bot:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    container_name: admin_bot
+    env_file:
+      - .env
+    networks:
+      - shared_network
+
+networks:
+  shared_network:
+    external: true

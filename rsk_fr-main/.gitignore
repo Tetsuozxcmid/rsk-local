@@ -1,0 +1,90 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+/data/taskAttempts.json
+
+data/mayakTokens.json
+data/mayak-sessions.json
+data/mayak-session-tokens.json
+data/mayak-session-runtime.json
+data/mayakTaskAttempts.json
+data/sessionLogs.json
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.local.example
+
+# claude code
+.claude/
+CLAUDE.md
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+data/DeltaTest.json
+data/mayakData.json
+data/questionnaires.json
+
+data/results.json
+data/telegram-sessions/
+data/prep-sessions/
+data/botAdmins.json
+data/tokenRequests.json
+data/mayak-settings.json
+data/mayak-onboarding-survey-responses.json
+data/mayak-onboarding-files/submissions/
+public/prep-uploads/
+public/tasks-2/v2/
+
+# local product context
+docs/local-product-context/*
+!docs/local-product-context/README.md
+!docs/local-product-context/mayak-patent-full.md
+!docs/local-product-context/mayak-master-guide-full.md
+
+# local extraction scratch space
+.npm-cache/
+.tmp-pdf-tools/
+tmp_pdf_tools/
+tmp_mascot_batch/
+tmp_mascot_compare/
+tmp_qwen_eval_cases.json
+tmp_qwen_eval_results.json
+tmp_qwen_eval_results_v2.json
+.tools/
+
+public/tasks-2/v2/
+
+data/mayak-content/

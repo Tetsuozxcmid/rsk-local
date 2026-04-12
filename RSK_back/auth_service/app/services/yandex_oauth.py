@@ -1,0 +1,173 @@
+from fastapi import APIRouter, Depends, Response
+from fastapi.responses import RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from aio_pika.abc import AbstractRobustConnection
+import httpx
+import aio_pika
+import json
+import time
+import traceback
+
+from db.session import get_db
+from cruds.users_crud.crud import UserCRUD
+from db.models.user import UserRole
+from services.jwt import create_access_token
+from services.oauth_profile import (
+    build_user_registered_event,
+    normalize_yandex_profile,
+)
+from services.profile_client import UserProfileClient
+from services.rabbitmq import get_rabbitmq_connection
+from config import settings
+from cookie_params import session_set_cookie_kwargs
+
+yandex_router = APIRouter(prefix="/auth/yandex", tags=["Yandex OAuth"])
+
+COOKIE_NAME = "users_access_token"
+
+
+@yandex_router.get("/login")
+async def yandex_login():
+    url = (
+        "https://oauth.yandex.com/authorize?"
+        "response_type=code"
+        f"&client_id={settings.YANDEX_CLIENT_ID}"
+        f"&redirect_uri={settings.YANDEX_REDIRECT_URI}"
+    )
+    return RedirectResponse(url)
+
+
+@yandex_router.get("/callback")
+async def yandex_callback(
+    response: Response,
+    code: str | None = None,
+    error: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    rabbitmq: AbstractRobustConnection = Depends(get_rabbitmq_connection),
+):
+    print(
+        f"[YANDEX DEBUG {time.time()}] Callback started, code: {code}, error: {error}"
+    )
+
+    if error:
+        return RedirectResponse(f"{settings.YANDEX_FRONTEND_URL}?error={error}")
+
+    if not code:
+        return RedirectResponse(f"{settings.YANDEX_FRONTEND_URL}?error=code_missing")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            token_resp = await client.post(
+                "https://oauth.yandex.com/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "client_id": settings.YANDEX_CLIENT_ID,
+                    "client_secret": settings.YANDEX_CLIENT_SECRET,
+                    "redirect_uri": settings.YANDEX_REDIRECT_URI,
+                },
+            )
+
+            token_data = token_resp.json()
+            access_token = token_data.get("access_token")
+
+            if not access_token:
+                print(f"[YANDEX ERROR] Token response: {token_data}")
+                return RedirectResponse(
+                    f"{settings.YANDEX_FRONTEND_URL}?error=token_not_received"
+                )
+
+            user_resp = await client.get(
+                "https://login.yandex.ru/info?format=json",
+                headers={"Authorization": f"OAuth {access_token}"},
+            )
+            user_data = user_resp.json()
+
+        provider_id = str(user_data.get("id") or "")
+        if not provider_id:
+            return RedirectResponse(
+                f"{settings.YANDEX_FRONTEND_URL}?error=user_not_received"
+            )
+
+        oauth_profile = normalize_yandex_profile(user_data)
+        email = oauth_profile["email"]
+        if not email:
+            return RedirectResponse(
+                f"{settings.YANDEX_FRONTEND_URL}?error=email_not_provided"
+            )
+
+        try:
+            user, created = await UserCRUD.create_oauth_user(
+                db=db,
+                email=email,
+                name=oauth_profile["full_name"],
+                provider="yandex",
+                provider_id=provider_id,
+                role=UserRole.STUDENT,
+            )
+            print(f"[YANDEX DEBUG] OAuth user resolved, id: {user.id}, created: {created}")
+        except Exception:
+            traceback.print_exc()
+            return RedirectResponse(
+                f"{settings.YANDEX_FRONTEND_URL}?error=user_creation_failed"
+            )
+        resolved_username = user.login or f"user{user.id}"
+
+        await UserProfileClient.sync_oauth_profile(
+            user_id=user.id,
+            email=user.email or email,
+            username=resolved_username,
+            first_name=oauth_profile["first_name"],
+            last_name=oauth_profile["last_name"],
+            patronymic=oauth_profile["patronymic"],
+            full_name=user.name or oauth_profile["full_name"],
+            role=user.role.value,
+            auth_provider="yandex",
+        )
+
+        try:
+            channel = await rabbitmq.channel()
+            exchange = await channel.declare_exchange(
+                "user_events", type="direct", durable=True
+            )
+
+            user_event = build_user_registered_event(
+                user_id=user.id,
+                email=user.email or email,
+                username=resolved_username,
+                first_name=oauth_profile["first_name"],
+                last_name=oauth_profile["last_name"],
+                patronymic=oauth_profile["patronymic"],
+                full_name=user.name or oauth_profile["full_name"],
+                role=user.role.value,
+                auth_provider="yandex",
+            )
+
+            message = aio_pika.Message(
+                body=json.dumps(user_event).encode(),
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                headers={"event_type": "user_registered"},
+            )
+
+            await exchange.publish(message, routing_key="user.created")
+            print(f"[YANDEX DEBUG] Event published for user_id: {user.id}")
+        except Exception as e:
+            print(f"[YANDEX WARNING] Failed to publish RabbitMQ event: {e}")
+
+        jwt_token = await create_access_token(
+            {"sub": str(user.id), "role": user.role.value}
+        )
+
+        response = RedirectResponse(settings.YANDEX_FRONTEND_URL)
+        response.set_cookie(
+            key=COOKIE_NAME,
+            value=jwt_token,
+            **session_set_cookie_kwargs(max_age=3600 * 24 * 7),
+        )
+
+        print(f"[YANDEX DEBUG] Callback completed for user_id: {user.id}")
+        return response
+
+    except Exception:
+        traceback.print_exc()
+        return RedirectResponse(f"{settings.YANDEX_FRONTEND_URL}?error=internal_error")
