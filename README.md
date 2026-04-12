@@ -1,4 +1,4 @@
-# RSK Local — портал РосДК и микросервисный бэкенд
+# RSK Local — портал РосДК 
 
 Каталог `rsk_local` объединяет веб-клиент и серверную часть экосистемы **РосДК**. Публичная продакшен-версия сайта: **[https://rosdk.ru](https://rosdk.ru)**.
 
@@ -44,7 +44,7 @@
 
 ---
 
-## Соответствие учебным критериям (шпаргалка)
+## Соответствие критериям 
 
 | Требование | Где в проекте |
 |------------|----------------|
@@ -68,40 +68,13 @@
 
 ## Локальный запуск
 
-### Бэкенд
+### Общий ( можно запустить одним докер файлом в RSK_back )
 
 ```bash
 cd RSK_back
 docker compose -f docker-compose.local.yml up --build
 ```
 
-Подробности портов и OAuth: `RSK_back/LOCAL_DEVELOPMENT.md`.
-
-### Фронтенд
-
-```bash
-cd rsk_fr-main
-npm install
-npm run dev
-```
-
-Порт по умолчанию задан в `package.json` (например, `1234`).
-
-### Команды в PowerShell (Windows)
-
-В **PowerShell** цепочка **`&&`** как в bash может не работать (зависит от версии). Используйте **точку с запятой**:
-
-```powershell
-cd "C:\путь\к\rsk_local\rsk_fr-main"; npm install; npm test
-```
-
-Смысл той же «длинной» команды, что и с `&&` в bash:
-
-1. `cd ...` — перейти в папку фронтенда  
-2. `npm install` — установить зависимости из `package.json`  
-3. `npm test` — запустить скрипт `"test"` (у нас это **Vitest**)
-
----
 
 ## Автотесты
 
@@ -114,9 +87,10 @@ cd "C:\путь\к\rsk_local\rsk_fr-main"; npm install; npm test
 Из каталога **`rsk_local`** (рядом с `docker-compose.tests.yml`):
 
 ```powershell
-# собрать образы и прогнать все четыре набора тестов подряд
+# собрать образы и прогнать все четыре набора тестов подряд ( должно быть включено ядро докер daemon)
 .\scripts\run-all-docker-tests.ps1
 ```
+На Linux/macOS: `sh scripts/run-all-docker-tests.sh`.
 
 Или по отдельности:
 
@@ -129,52 +103,29 @@ docker compose -f docker-compose.tests.yml run --rm user_profile_tests
 docker compose -f docker-compose.tests.yml run --rm frontend_tests
 ```
 
-На Linux/macOS: `sh scripts/run-all-docker-tests.sh`.
-
 Рабочий **Docker Desktop** (или Docker Engine + compose plugin) обязателен. Тестам **не нужен** запущенный основной `docker-compose` с Postgres: в pytest используется SQLite в памяти; фронт — только `npm ci` + Vitest.
 
 Файлы: `docker-compose.tests.yml`, `rsk_fr-main/Dockerfile.test`, `rsk_fr-main/.dockerignore`.
 
-### Фронтенд (Vitest)
-
-```powershell
-cd rsk_fr-main
-npm install
-npm test
-```
 
 Файлы: `src/lib/backendApiBase.test.js` (маршрутизация URL к микросервисам), `src/utils/auth.test.js` (cookie, признак авторизации, сохранение/очистка userData с моками `js-cookie`).
 
 ### Бэкенд (pytest)
 
-Установите зависимости сервиса: **`pip install -r requirements.txt`** из каталога сервиса (рекомендуется виртуальное окружение). Для `teams_service` при первом запуске нужен установленный **asyncpg** (он подтягивается из `requirements.txt`).
 
 **Auth** (`RSK_back\auth_service`): JWT, валидация Pydantic, **регистрация и проверка пароля** через `UserCRUD` / `User.check_user` на **SQLite в памяти**; блокировка `pg_advisory` для email подменена в тестах; для стабильности на новых версиях Python в тестах используется **заглушка** вместо bcrypt (логика приложения в проде по-прежнему bcrypt).
 
-```powershell
-cd RSK_back\auth_service
-python -m pytest tests -q
-```
+
 
 **Teams** (`RSK_back\teams_service`): OpenAPI/metrics, **SQL-операции** с `Team`/`TeamMember` на SQLite, вызовы **хендлеров** маршрутов (`get_teams_count_by_region`, `delete_team`, `get_team_by_id`) с реальной сессией БД. HTTP-клиент к приложению с `root_path="/teams"` в тестах даёт 404 на часть путей, поэтому проверки бизнес-логики идут через **прямой вызов async-функций маршрутов** (эквивалент интеграционного теста без сети).
 
-```powershell
-cd RSK_back\teams_service
-python -m pytest tests -q
-```
+
 
 **Профиль** (`RSK_back\user_profile`): **смена имени/фамилии/региона** (`ProfileCRUD.update_my_profile`), чтение профиля, вспомогательные функции разбора ФИО и ролей (SQLite + юнит-тесты на чистые методы).
 
-```powershell
-cd RSK_back\user_profile
-python -m pytest tests -q
-```
 
-Во всех трёх каталогах есть **`pytest.ini`** с `asyncio_mode = auto`. Тесты на SQLite **не заменяют** полный прогон против PostgreSQL в Docker, но дают быстрые проверки CRUD и сценариев auth/команд/профиля без поднятия всего стека.
+Во всех трёх каталогах есть **`pytest.ini`** с `asyncio_mode = auto`. 
 
----
 
-## Полезные ссылки
 
-- `RSK_back/README.md` — микросервисы, эндпоинты, Docker  
-- `RSK_back/LOCAL_DEVELOPMENT.md` — локальный compose и переменные  
+
