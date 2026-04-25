@@ -23,7 +23,7 @@ const BASE_NAV_LINKS = [
         ],
     },
     { label: "Организации", disable: false, login: true, learn: false, href: "/organizations", icon: dynamic(() => import("@/assets/nav/organ.svg")) },
-    { label: "Проекты", disable: false, login: true, learn: true, href: "/projects", icon: dynamic(() => import("@/assets/nav/projects.svg")) },
+    { label: "Проекты", disable: false, login: true, learn: false, href: "/projects", icon: dynamic(() => import("@/assets/nav/projects.svg")) },
     { label: "Обучение", disable: false, login: true, learn: false, href: "/cours", icon: dynamic(() => import("@/assets/nav/cours.svg")) },
     { label: "Маяк Око", href: "/tools/mayak-oko", login: false, learn: false, icon: dynamic(() => import("@/assets/nav/inst.svg")) },
     {

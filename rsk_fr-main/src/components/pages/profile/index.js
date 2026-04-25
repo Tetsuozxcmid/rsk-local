@@ -156,7 +156,7 @@ export default function ProfileIndexPage({ goTo }) {
                             </Link>
 
                             <hr className="w-full border-solid border-[1.5px] border-(--color-gray-plus)" />
-                            <Link href={"/teams/" + userData.data.team_id}>
+                            <Link href={userData.data.team_id && Number(userData.data.team_id) > 0 ? `/teams/${userData.data.team_id}` : "/teams"}>
                                 <div className="group flex items-center justify-between w-full">
                                     <p className="flex-1 link">{userData.data.team || ORGANIZATION_EMPTY_LABEL}</p>
                                     <LinkIcon className="stroke-(--color-gray-white) group-hover:stroke-black" style={{ transition: "stroke .3s ease-in-out" }} />

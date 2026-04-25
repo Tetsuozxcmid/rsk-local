@@ -1,13 +1,6 @@
 # Прогон автотестов в контейнерах (Python 3.11/3.12 и Node 22).
 # Не требует локального venv/npm подходящих версий.
-#
-# Один сервис:
-#   docker compose -f docker-compose.tests.yml run --rm auth_tests
-#
-# Все подряд (PowerShell):
-#   .\scripts\run-all-docker-tests.ps1
-#
-# Из каталога rsk_local (рядом с этим файлом).
+
 
 services:
   auth_tests:
@@ -35,4 +28,4 @@ services:
     build:
       context: ./rsk_fr-main
       dockerfile: Dockerfile.test
-    # CMD из Dockerfile.test: npm test
+    

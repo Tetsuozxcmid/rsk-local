@@ -12,7 +12,6 @@ from routes.moderator_assign.route import router as moderator_router
 from routes.coures_routes.user_route import router as profile_router
 from routes.coures_routes.test_route import router as test_route_update_learned
 from services.assignement import assignment_service
-from config import settings
 
 
 SERVICE_NAME = "learning_service"
@@ -42,7 +41,6 @@ app = FastAPI(
     title="Learning FASTAPI",
     description="xxx",
     root_path="/learning",
-    openapi_url="/openapi.json",
     lifespan=lifespan,
 )
 
